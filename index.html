@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Project Discussion Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/papaparse/5.3.2/papaparse.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body {
@@ -100,6 +101,8 @@
                     <button id="tab-governance" onclick="switchView('governance')" class="main-view-tab w-1/2 p-2 rounded-r-md border-l">Governance</button>
                 </div>
                 <div class="space-y-2 mt-4">
+                    <input type="file" id="csv-import" class="hidden" accept=".csv" onchange="importData(event)">
+                    <button onclick="document.getElementById('csv-import').click()" class="w-full px-4 py-2 bg-teal-600 text-white rounded-md hover:bg-teal-700 text-sm font-medium">Import CSV</button>
                     <button onclick="openProjectModal('add')" class="w-full px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm font-medium">Add New Project</button>
                     <button onclick="showCompletionReport()" class="w-full px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 text-sm font-medium">View All Completed Tasks</button>
                 </div>
@@ -226,6 +229,65 @@
                 }
             };
         }
+        
+        function importData(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            Papa.parse(file, {
+                header: true,
+                complete: function(results) {
+                    processAndLoadData(results.data);
+                }
+            });
+        }
+
+        function processAndLoadData(csvData) {
+            const newData = getCombinedDefaultData();
+            
+            csvData.forEach(row => {
+                const projectName = row['Project Name'];
+                if (!projectName) return;
+
+                const categoryKey = determineCategory(row['Status']);
+                
+                const newProject = {
+                    id: Date.now() + Math.random(),
+                    dateAdded: new Date().toISOString(),
+                    status: 'On Track', // Default status
+                    values: [projectName, row['Project POC'] || 'N/A', 'N/A'], // Modules summary not in this file
+                    actionItems: [],
+                    governance: {
+                        poc: row['Project POC'] || '',
+                        email: row['POC Email'] || '',
+                        projectManager: row['Project Manager'] || '',
+                        executiveLeadership: row['Executive Leadership'] || '',
+                        schedule: row['Call Schedule'] || '',
+                        timezone: 'IST' // Default
+                    },
+                    modules: []
+                };
+
+                if (newData[categoryKey]) {
+                    newData[categoryKey].items.push(newProject);
+                }
+            });
+            
+            projectData = newData;
+            saveData();
+            switchView('projects');
+        }
+
+        function determineCategory(status) {
+            if (!status) return 'liveProjectsEndUser';
+            const s = status.toLowerCase();
+            if (s.includes('planning')) return 'livePoc';
+            if (s.includes('live') || s.includes('installation') || s.includes('post installation')) return 'liveProjectsEndUserTechOps';
+            if (s.includes('wait')) return 'onHold';
+            if (s.includes('early')) return 'demos';
+            return 'liveProjectsEndUser'; // Default
+        }
+
 
         function saveData() {
             localStorage.setItem('projectDashboardData', JSON.stringify(projectData));
@@ -693,31 +755,44 @@
             openGeminiModal("All Completed Tasks Report", reportHtml);
         };
 
-        // --- Gemini API Integration ---
-        const API_KEY = ""; // PASTE YOUR API KEY HERE
+        // --- Azure OpenAI API Integration ---
+        const AZURE_ENDPOINT = "YOUR_AZURE_ENDPOINT_URL"; // e.g., https://your-resource-name.openai.azure.com
+        const AZURE_API_KEY = "YOUR_AZURE_API_KEY";
+        const AZURE_DEPLOYMENT_NAME = "YOUR_MODEL_DEPLOYMENT_NAME"; // e.g., gpt-4
 
-        async function callGeminiAPI(prompt) {
-            if (!API_KEY) {
-                return "Error: API_KEY is not set. Please add your Gemini API key to the script.";
+        async function callAzureOpenAI(prompt) {
+            if (!AZURE_ENDPOINT || !AZURE_API_KEY || !AZURE_DEPLOYMENT_NAME || AZURE_ENDPOINT.includes("YOUR")) {
+                return "Error: Azure OpenAI credentials are not set. Please add your endpoint, key, and deployment name to the script.";
             }
-            const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`;
-            const payload = { contents: [{ role: "user", parts: [{ text: prompt }] }] };
+            
+            const API_URL = `${AZURE_ENDPOINT}/openai/deployments/${AZURE_DEPLOYMENT_NAME}/chat/completions?api-version=2024-02-01`;
+            
+            const payload = {
+                messages: [
+                    { "role": "system", "content": "You are a helpful project management assistant." },
+                    { "role": "user", "content": prompt }
+                ]
+            };
+            
             try {
                 const response = await fetch(API_URL, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'api-key': AZURE_API_KEY
+                    },
                     body: JSON.stringify(payload)
                 });
                 if (!response.ok) throw new Error(`API Error: ${response.status} ${response.statusText}`);
                 const data = await response.json();
-                if (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0]) {
-                    return data.candidates[0].content.parts[0].text;
+                if (data.choices && data.choices[0] && data.choices[0].message) {
+                    return data.choices[0].message.content;
                 } else {
-                     return "Error: Received an unexpected response format from the API.";
+                     return "Error: Received an unexpected response format from the Azure API.";
                 }
             } catch (error) {
-                console.error("Error calling Gemini API:", error);
-                return `An error occurred. Check the console for details. Make sure your API key is valid and the model name is correct.`;
+                console.error("Error calling Azure OpenAI API:", error);
+                return `An error occurred. Check the console for details. Make sure your Azure credentials and deployment name are correct.`;
             }
         }
 
@@ -727,7 +802,7 @@
             openGeminiModal('✨ Suggesting Next Steps...');
             const pendingTasks = (item.actionItems || []).filter(a => !a.completed).map(a => `- ${a.text}`).join('\n');
             const prompt = `Project Name: ${item.values[0]}. Status: ${item.status}. Pending Tasks:\n${pendingTasks || 'None'}. Suggest 3-5 clear, new, actionable next steps for this project. Do not repeat the pending tasks. Format as a simple list where each step is on a new line and starts with a hyphen.`;
-            const result = await callGeminiAPI(prompt);
+            const result = await callAzureOpenAI(prompt);
             const suggestions = result.split('\n').filter(s => s.startsWith('-')).map(s => s.substring(1).trim());
             const geminiModalContent = document.getElementById('gemini-modal-content');
             const geminiModalActions = document.getElementById('gemini-modal-actions');
@@ -754,7 +829,7 @@
             }
             openGeminiModal('✨ Breaking Down Task...');
             const prompt = `You are a project manager. Break down the following high-level task into a list of smaller, actionable sub-tasks. Return only a simple list of tasks, separated by newlines (using \\n). Do not use markdown or numbering. High-level task: "${task}"`;
-            const result = await callGeminiAPI(prompt);
+            const result = await callAzureOpenAI(prompt);
             const subTasks = result.split('\n').filter(t => t.trim() !== '');
             subTasks.forEach(subTask => {
                 addActionItem(sectionId, itemId, subTask);
@@ -770,7 +845,7 @@
             const completedCount = (item.actionItems || []).filter(a => a.completed).length;
             const totalCount = (item.actionItems || []).length;
             const prompt = `Draft a concise, professional status update email for the project "${item.values[0]}". Its current status is "${item.status}" with ${completedCount} of ${totalCount} tasks completed. Pending tasks are:\n${pendingTasks || 'None'}. If the status is 'At Risk' or 'Delayed', be sure to mention any blockers identified in the pending tasks comments. Start the entire response with a subject line like this: "Subject: Status Update - [Project Name]".`;
-            const result = await callGeminiAPI(prompt);
+            const result = await callAzureOpenAI(prompt);
             const geminiModalContent = document.getElementById('gemini-modal-content');
             const geminiModalActions = document.getElementById('gemini-modal-actions');
             geminiModalContent.innerHTML = `
@@ -797,7 +872,7 @@
 
             Format the output clearly with a heading for each risk.`;
 
-            const result = await callGeminiAPI(prompt);
+            const result = await callAzureOpenAI(prompt);
             const geminiModalContent = document.getElementById('gemini-modal-content');
             geminiModalContent.innerHTML = `<div class="p-2 border rounded-md bg-gray-50" style="white-space: pre-wrap;">${result}</div>`;
         };
@@ -828,7 +903,7 @@
 
             Format the output as a simple, clean text that can be copied into an email or document.`;
 
-            const result = await callGeminiAPI(prompt);
+            const result = await callAzureOpenAI(prompt);
             const geminiModalContent = document.getElementById('gemini-modal-content');
             geminiModalContent.innerHTML = `
                 <p class="font-semibold mb-3">Here is a draft meeting agenda. You can copy the text below.</p>
